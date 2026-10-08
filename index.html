@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#101612">
+<title>Assigned</title>
+<style>
+  :root {
+    --bg:#101612; --card:#1a2420; --line:#2c3b34; --text:#e7f3ec; --muted:#93a79c;
+    --green:#3ddc84; --amber:#f0b429; --red:#ff6b6b; --blue:#7eb6ff;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    padding:16px 16px 92px;
+  }
+  header { display:flex; justify-content:space-between; align-items:flex-end; gap:12px; }
+  h1 { font-size:22px; margin:0; letter-spacing:-.03em; }
+  .sub { color:var(--muted); font-size:13px; }
+  button, input, select { font:inherit; color:inherit; }
+  button { background:#24312b; border:1px solid var(--line); border-radius:10px; padding:8px 12px; }
+  button.primary { background:var(--green); color:#072112; border:0; font-weight:700; }
+  button.warn { background:#3a2a12; border-color:#6a4e1d; }
+  .hero {
+    margin:14px 0; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px;
+  }
+  .hero .label { color:var(--muted); font-size:13px; }
+  .hero .num { font-size:36px; font-weight:750; letter-spacing:-.04em; }
+  .zero { color:var(--green); }
+  .left { color:var(--amber); }
+  .over { color:var(--red); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .group { margin:18px 0 8px; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+  .cat {
+    display:grid; grid-template-columns:1fr auto auto; gap:8px; align-items:center;
+    background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin:6px 0;
+  }
+  .cat b { font-weight:650; }
+  .mini { color:var(--muted); font-size:12px; }
+  input[type="number"], input[type="text"], input[type="month"], select {
+    background:#0d1411; border:1px solid var(--line); border-radius:8px; padding:8px;
+  }
+  input[type="number"] { width:92px; text-align:right; }
+  nav {
+    position:fixed; left:0; right:0; bottom:0; display:flex; background:#0c120f; border-top:1px solid var(--line);
+    padding:8px 8px calc(8px + env(safe-area-inset-bottom));
+  }
+  nav button { flex:1; background:transparent; border:0; color:var(--muted); }
+  nav button.on { color:var(--green); }
+  .tx { padding:10px 0; border-bottom:1px solid var(--line); display:grid; grid-template-columns:1fr auto; gap:4px 8px; }
+  .pill { font-size:12px; color:var(--blue); }
+  .drop {
+    border:1px dashed var(--line); border-radius:14px; padding:18px; text-align:center; color:var(--muted); margin:10px 0;
+  }
+  .note { color:var(--muted); font-size:13px; }
+  .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; margin:10px 0; }
+  .hidden { display:none; }
+  .bar { height:6px; background:#0d1411; border-radius:99px; overflow:hidden; margin-top:6px; }
+  .bar > span { display:block; height:100%; background:var(--green); }
+  .bar.hot > span { background:var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Assigned</h1>
+    <div class="sub">Every dollar gets a job. On this phone and this laptop.</div>
+  </div>
+  <input id="month" type="month">
+</header>
+<section class="hero">
+  <div class="label" id="heroLabel">Left to assign</div>
+  <div class="num" id="heroNum">$0.00</div>
+  <div class="mini" id="heroMeta"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="primary" id="suggest">Fill from history</button>
+    <button id="balance">Put leftover in Buffer</button>
+    <button id="exportBtn">Export backup</button>
+  </div>
+</section>
+<main id="view"></main>
+<nav>
+  <button data-tab="budget" class="on">Budget</button>
+  <button data-tab="activity">Activity</button>
+  <button data-tab="import">Import</button>
+  <button data-tab="rules">Auto</button>
+</nav>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+const SEED = [];
+const KEY = "assigned-budget-v1";
+const money = n => (n<0?"-":"") + "$" + Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const uid = () => Math.random().toString(36).slice(2,10);
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+const DEFAULT_CATS = [
+  ["inc-pay","Income","Paycheck"],["inc-side","Income","Side work"],["inc-other","Income","Other income"],
+  ["give","Giving","Giving"],
+  ["save-e","Saving","Emergency"],["save-b","Saving","Buffer"],
+  ["house","Housing","Rent"],["util","Housing","Utilities"],["phone","Housing","Phone"],
+  ["gas","Transport","Gas"],["car","Transport","Car"],
+  ["groc","Food","Groceries"],["out","Food","Eating out"],
+  ["home","Personal","Household"],["subs","Personal","Subscriptions"],
+  ["fun","Fun","Entertainment"],["bet","Fun","Sportsbook"],
+  ["health","Health","Health"],["debt","Debt","Debt"],
+  ["xfer","Transfers","Transfers between accounts"]
+];
+const EXCLUDE_IDS = new Set(["xfer"]);
+const INCOME_IDS = new Set(["inc-pay","inc-side","inc-other"]);
+
+const DEFAULT_RULES = [
+  ["fanduel|sportsbook|draftkings","bet",false],
+  ["mcdonald|taco bell|wendy|burger king|kfc","out",false],
+  ["walmart|kroger|dollar general|aldi|iga","groc",false],
+  ["marathon|speedway|shell|bp\\b|sunoco|casey|circle k|pilot","gas",false],
+  ["netflix|spotify|hulu|disney|icloud|apple.com/bill","subs",false],
+  ["round up|chime transfer|transfer from chime|cash app\\*|payment to cash app|venmo|paypal transfer","xfer",true],
+  ["payroll|walmart pay|direct dep|osl","inc-pay",false],
+  ["transfer from","inc-other",false]
+];
+
+function blank() {
+  const now = new Date();
+  const month = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0");
+  return {
+    month,
+    cats: DEFAULT_CATS.map(([id,group,name]) => ({id,group,name,plan:{}})),
+    tx: [],
+    rules: DEFAULT_RULES.map(([pattern,categoryId,exclude],i) => ({id:"r"+i,pattern,categoryId,exclude})),
+    seeded: false
+  };
+}
+let state = load();
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && s.cats && s.tx) return s;
+  } catch (e) {}
+  const s = blank();
+  if (SEED.length) {
+    s.tx = SEED.map(t => decorate(t));
+    s.seeded = true;
+  }
+  return s;
+}
+function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+function matchRule(text) {
+  const t = (text||"").toLowerCase();
+  for (const rule of state.rules) {
+    try { if (new RegExp(rule.pattern, "i").test(t)) return rule; } catch (e) {}
+  }
+  return null;
+}
+function decorate(t) {
+  const text = (t.payee||"") + " " + (t.memo||"") + " " + (t.type||"");
+  const rule = matchRule(text);
+  const categoryId = t.categoryId || (rule ? rule.categoryId : (t.amount > 0 ? "inc-other" : "home"));
+  const excluded = t.excluded != null ? t.excluded : (rule ? !!rule.exclude : EXCLUDE_IDS.has(categoryId));
+  return {
+    id: t.id || uid(),
+    date: t.date,
+    payee: t.payee || "Unknown",
+    memo: t.memo || "",
+    amount: Number(t.amount) || 0,
+    source: t.source || "Import",
+    account: t.account || "",
+    type: t.type || "",
+    categoryId, excluded,
+    auto: !t.categoryId
+  };
+}
+function catName(id) {
+  const c = state.cats.find(x => x.id === id);
+  return c ? c.name : "Uncategorized";
+}
+function monthOf(d) { return (d||"").slice(0,7); }
+function txInMonth(m) { return state.tx.filter(t => monthOf(t.date) === m && !t.excluded); }
+function plannedIncome(m) {
+  return state.cats.filter(c => INCOME_IDS.has(c.id)).reduce((s,c) => s + Number(c.plan[m]||0), 0);
+}
+function plannedOut(m) {
+  return state.cats.filter(c => !INCOME_IDS.has(c.id) && !EXCLUDE_IDS.has(c.id)).reduce((s,c) => s + Number(c.plan[m]||0), 0);
+}
+function spent(id, m) {
+  return txInMonth(m).filter(t => t.categoryId === id && t.amount < 0).reduce((s,t) => s + Math.abs(t.amount), 0);
+}
+function received(id, m) {
+  return txInMonth(m).filter(t => t.categoryId === id && t.amount > 0).reduce((s,t) => s + t.amount, 0);
+}
+
+function render() {
+  const m = state.month;
+  document.getElementById("month").value = m;
+  const left = plannedIncome(m) - plannedOut(m);
+  const num = document.getElementById("heroNum");
+  num.textContent = money(left);
+  num.className = "num " + (Math.abs(left) < 0.005 ? "zero" : left > 0 ? "left" : "over");
+  document.getElementById("heroLabel").textContent = Math.abs(left) < 0.005 ? "Assigned to zero" : left > 0 ? "Left to assign" : "Over-assigned";
+  const incoming = txInMonth(m).filter(t => t.amount > 0).reduce((s,t) => s+t.amount, 0);
+  const outgoing = txInMonth(m).filter(t => t.amount < 0).reduce((s,t) => s+Math.abs(t.amount), 0);
+  document.getElementById("heroMeta").textContent = "Money in " + money(incoming) + " · Money out " + money(outgoing) + " · " + txInMonth(m).length + " lines this month";
+  const tab = document.querySelector("nav button.on").dataset.tab;
+  const view = document.getElementById("view");
+  if (tab === "budget") view.innerHTML = budgetView(m);
+  if (tab === "activity") view.innerHTML = activityView(m);
+  if (tab === "import") view.innerHTML = importView();
+  if (tab === "rules") view.innerHTML = rulesView();
+  bind();
+}
+function budgetView(m) {
+  const groups = [];
+  for (const c of state.cats) if (!groups.includes(c.group)) groups.push(c.group);
+  return groups.map(g => {
+    const rows = state.cats.filter(c => c.group === g).map(c => {
+      const plan = Number(c.plan[m] || 0);
+      const used = INCOME_IDS.has(c.id) ? received(c.id, m) : spent(c.id, m);
+      const remain = plan - used;
+      const pct = plan > 0 ? Math.min(100, Math.round(used / plan * 100)) : 0;
+      return `<div class="cat">
+        <div><b>${c.name}</b><div class="mini">${INCOME_IDS.has(c.id) ? "Received" : "Spent"} ${money(used)} · left ${money(remain)}</div>
+        <div class="bar ${used>plan && plan>0 ? "hot":""}"><span style="width:${pct}%"></span></div></div>
+        <input type="number" step="0.01" data-plan="${c.id}" value="${plan || ""}" placeholder="0">
+        <span class="mini">${EXCLUDE_IDS.has(c.id) ? "ignored" : ""}</span>
+      </div>`;
+    }).join("");
+    return `<div class="group">${g}</div>${rows}`;
+  }).join("") + `<p class="note">Type a planned amount on each row. Income minus those amounts should hit $0. Transfers are ignored so Cash App cash-outs do not get counted twice.</p>`;
+}
+function activityView(m) {
+  const rows = state.tx.filter(t => monthOf(t.date) === m).sort((a,b) => b.date.localeCompare(a.date));
+  if (!rows.length) return `<p class="note">Nothing in ${m} yet. Import a statement or switch months. Import a Cash App CSV or PDF to fill this month.</p>`;
+  const opts = state.cats.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
+  return rows.map(t => `<div class="tx">
+    <div><b>${esc(t.payee)}</b><div class="mini">${t.date} · ${esc(t.account || t.source)}${t.excluded ? " · excluded" : ""}</div></div>
+    <div style="text-align:right">${money(t.amount)}<div class="pill">${catName(t.categoryId)}</div></div>
+    <select data-cat="${t.id}">${state.cats.map(c => `<option value="${c.id}" ${c.id===t.categoryId?"selected":""}>${c.name}</option>`).join("")}</select>
+    <button data-ex="${t.id}">${t.excluded ? "Include" : "Exclude"}</button>
+  </div>`).join("");
+}
+function importView() {
+  return `<div class="drop"><b>Drop Cash App CSV, bank CSV, or monthly PDF</b><div class="mini">Or tap choose. Files stay on this device.</div>
+    <input id="file" type="file" accept=".csv,.pdf,text/csv,application/pdf" multiple style="margin-top:10px">
+  </div>
+  <div class="sheet">
+    <div class="mini">Move this budget to the other device</div>
+    <div class="row" style="margin-top:8px">
+      <button id="exportBtn2">Export backup</button>
+      <input id="backup" type="file" accept="application/json,.json">
+    </div>
+    <p class="note">Phone and laptop do not share a login. Export on one, import the backup on the other. That is the sync.</p>
+  </div>
+  <div class="sheet">
+    <button class="warn" id="resetSeed">Clear transactions</button>
+    <p class="note">Clears imported lines on this phone. Plans stay.</p>
+  </div>`;
+}
+function rulesView() {
+  const rows = state.rules.map(r => `<div class="tx"><div><b>${esc(r.pattern)}</b><div class="mini">${catName(r.categoryId)}${r.exclude?" · exclude":""}</div></div>
+    <button data-delrule="${r.id}">Remove</button></div>`).join("");
+  return `<div class="sheet"><b>On-device automation</b>
+    <p class="note">This is not a cloud model. It categorizes from rules, learns when you correct a line, fills next month from your averages, and parks leftover in Buffer. Corrections beat the guess.</p>
+    <div class="row">
+      <input id="pat" type="text" placeholder="keyword, e.g. speedway">
+      <select id="ruleCat">${state.cats.map(c => `<option value="${c.id}">${c.name}</option>`).join("")}</select>
+      <button id="addRule" class="primary">Add rule</button>
+    </div>
+  </div>${rows}`;
+}
+function esc(s) { return String(s||"").replace(/[&<>]/g, c => ({'&':'&','<':'<','>':'>'}[c])); }
+
+function bind() {
+  document.querySelectorAll("[data-plan]").forEach(el => el.onchange = () => {
+    const c = state.cats.find(x => x.id === el.dataset.plan);
+    c.plan[state.month] = Number(el.value || 0);
+    save(); render();
+  });
+  document.querySelectorAll("[data-cat]").forEach(el => el.onchange = () => {
+    const t = state.tx.find(x => x.id === el.dataset.cat);
+    t.categoryId = el.value;
+    t.excluded = EXCLUDE_IDS.has(el.value);
+    t.auto = false;
+    learn(t);
+    save(); render();
+  });
+  document.querySelectorAll("[data-ex]").forEach(el => el.onclick = () => {
+    const t = state.tx.find(x => x.id === el.dataset.ex);
+    t.excluded = !t.excluded;
+    save(); render();
+  });
+  document.querySelectorAll("[data-delrule]").forEach(el => el.onclick = () => {
+    state.rules = state.rules.filter(r => r.id !== el.dataset.delrule);
+    save(); render();
+  });
+  const add = document.getElementById("addRule");
+  if (add) add.onclick = () => {
+    const pattern = document.getElementById("pat").value.trim();
+    if (!pattern) return;
+    state.rules.unshift({id:uid(), pattern: pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), categoryId: document.getElementById("ruleCat").value, exclude:false});
+    save(); render();
+  };
+  const file = document.getElementById("file");
+  if (file) file.onchange = () => handleFiles(file.files);
+  const backup = document.getElementById("backup");
+  if (backup) backup.onchange = () => importBackup(backup.files[0]);
+  const reset = document.getElementById("resetSeed");
+  if (reset) reset.onclick = () => {
+    state.tx = SEED.map(t => decorate(t));
+    save(); alert("Linked history reloaded."); render();
+  };
+  const ex2 = document.getElementById("exportBtn2");
+  if (ex2) ex2.onclick = exportBackup;
+}
+function learn(t) {
+  const word = (t.payee || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim().split(" ").slice(0,2).join(" ");
+  if (word.length < 3) return;
+  if (state.rules.some(r => r.pattern.toLowerCase() === word)) return;
+  state.rules.unshift({id:uid(), pattern: word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), categoryId: t.categoryId, exclude: t.excluded});
+}
+function parseCsv(text) {
+  const rows = [];
+  let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i+1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else {
+      if (c === '"') q = true;
+      else if (c === ",") { row.push(cur); cur = ""; }
+      else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+      else if (c !== "\r") cur += c;
+    }
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(x => String(x).trim()));
+}
+function headerIndex(headers, names) {
+  const h = headers.map(x => String(x).toLowerCase().trim());
+  for (const n of names) {
+    const i = h.findIndex(x => x === n || x.includes(n));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+function rowsFromCsv(text, filename) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) return [];
+  const h = rows[0];
+  const iDate = headerIndex(h, ["date"]);
+  const iAmt = headerIndex(h, ["net amount","amount"]);
+  const iName = headerIndex(h, ["name of sender/receiver","merchant_name","merchant","name","description","payee"]);
+  const iMemo = headerIndex(h, ["notes","memo","description"]);
+  const iType = headerIndex(h, ["transaction type","type"]);
+  const iStatus = headerIndex(h, ["status"]);
+  const out = [];
+  for (const r of rows.slice(1)) {
+    const date = normDate(r[iDate] || "");
+    let amount = Number(String(r[iAmt] || "").replace(/[$,]/g, ""));
+    if (!date || !isFinite(amount)) continue;
+    const type = iType >= 0 ? r[iType] : "";
+    const status = iStatus >= 0 ? String(r[iStatus]||"") : "";
+    if (/cancel|fail/i.test(status)) continue;
+    const payee = (iName >= 0 ? r[iName] : "") || type || "Cash App";
+    if (/sent|debit|purchase|payment to|fee|cash card/i.test(type) && amount > 0) amount = -amount;
+    out.push({date, payee, memo: iMemo >= 0 ? r[iMemo] : "", amount, type, source: filename, account: "Cash App"});
+  }
+  return out;
+}
+function normDate(s) {
+  s = String(s||"").trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1]+"-"+m[2]+"-"+m[3];
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) {
+    const y = m[3].length === 2 ? "20"+m[3] : m[3];
+    return y+"-"+m[1].padStart(2,"0")+"-"+m[2].padStart(2,"0");
+  }
+  return "";
+}
+async function handleFiles(files) {
+  let added = 0, skipped = 0;
+  for (const file of files) {
+    let items = [];
+    if (file.name.toLowerCase().endsWith(".pdf")) items = await rowsFromPdf(file);
+    else items = rowsFromCsv(await file.text(), file.name);
+    for (const item of items) {
+      const key = item.date + "|" + item.amount.toFixed(2) + "|" + item.payee.toLowerCase();
+      if (state.tx.some(t => (t.date+"|"+Number(t.amount).toFixed(2)+"|"+t.payee.toLowerCase()) === key)) { skipped++; continue; }
+      state.tx.push(decorate(item));
+      added++;
+    }
+  }
+  save();
+  alert("Added " + added + " lines. Skipped " + skipped + " duplicates.");
+  render();
+}
+async function rowsFromPdf(file) {
+  if (!window.pdfjsLib) { alert("PDF reader did not load. Use CSV, or open this page online once so the reader can download."); return []; }
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const data = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjsLib.getDocument({data}).promise;
+  let text = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    let lastX = 0;
+    for (const item of content.items) {
+      if (item.transform && item.transform[4] + 20 < lastX) text += "\n";
+      text += item.str + " ";
+      lastX = item.transform ? item.transform[4] : lastX;
+    }
+    text += "\n";
+  }
+  const out = [];
+  const re = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.{2,60}?)\s+(-?\$?\d[\d,]*\.\d{2})/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const date = normDate(m[1]);
+    let amount = Number(m[3].replace(/[$,]/g, ""));
+    const payee = m[2].replace(/\s+/g, " ").trim();
+    if (!date || !payee) continue;
+    if (/sent|purchase|fee|debit|payment to/i.test(payee) && amount > 0) amount = -amount;
+    out.push({date, payee, amount, source: file.name, account: "Cash App PDF", type: payee});
+  }
+  return out;
+}
+function suggest() {
+  const m = state.month;
+  const [y, mo] = m.split("-").map(Number);
+  const prev = [];
+  for (let i = 1; i <= 3; i++) {
+    const d = new Date(y, mo - 1 - i, 1);
+    prev.push(d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0"));
+  }
+  for (const c of state.cats) {
+    if (EXCLUDE_IDS.has(c.id)) continue;
+    const vals = prev.map(pm => INCOME_IDS.has(c.id) ? received(c.id, pm) : spent(c.id, pm)).filter(v => v > 0);
+    if (!vals.length) continue;
+    const avg = vals.reduce((s,v)=>s+v,0) / vals.length;
+    if (!c.plan[m]) c.plan[m] = Math.round(avg);
+  }
+  save(); render();
+}
+function balance() {
+  const m = state.month;
+  const left = plannedIncome(m) - plannedOut(m);
+  const buf = state.cats.find(c => c.id === "save-b");
+  buf.plan[m] = Number(buf.plan[m]||0) + left;
+  save(); render();
+}
+function exportBackup() {
+  const blob = new Blob([JSON.stringify(state)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "assigned-backup-" + state.month + ".json";
+  a.click();
+}
+async function importBackup(file) {
+  if (!file) return;
+  const next = JSON.parse(await file.text());
+  if (!next.tx || !next.cats) return alert("That file is not an Assigned backup.");
+  state = next;
+  save(); render();
+}
+document.getElementById("month").onchange = e => { state.month = e.target.value; save(); render(); };
+document.getElementById("suggest").onclick = suggest;
+document.getElementById("balance").onclick = balance;
+document.getElementById("exportBtn").onclick = exportBackup;
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  render();
+});
+render();
+</script>
+</body>
+</html>
