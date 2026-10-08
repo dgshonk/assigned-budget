@@ -42,18 +42,16 @@
 </head>
 <body>
 <header>
-  <div><h1>Assigned</h1><div class="sub">v4 · other income minus Domanic</div></div>
+  <div><h1>Assigned</h1><div class="sub">v5 · left to assign and overspent</div></div>
   <input id="month" type="month">
 </header>
 <section class="hero">
-  <div class="sub" id="heroLabel">Cash left</div>
-  <div class="num" id="heroNum">$0.00</div>
-  <div class="mini" id="heroMeta"></div>
   <div class="grid">
-    <div class="stat"><div class="mini">Money in</div><b id="inNum">$0</b></div>
-    <div class="stat"><div class="mini">Money out</div><b id="outNum">$0</b></div>
+    <div class="stat"><div class="mini" id="heroLabel">Left to assign</div><div class="num" id="heroNum">$0.00</div></div>
+    <div class="stat"><div class="mini">Overspent</div><div class="num" id="overNum">$0.00</div></div>
   </div>
-  <div class="stat" id="pair" style="margin-top:8px">Other money in − Domanic Hall</div>
+  <div class="mini" id="heroMeta"></div>
+  <div class="stat" id="pair" style="margin-top:8px">Side profit</div>
   <div class="row" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
     <button class="primary" id="suggest">Fill plan</button>
     <button id="exportBtn">Export backup</button>
@@ -72,8 +70,8 @@ const money = n => (n<0?"-":"") + "$" + Math.abs(Number(n)||0).toLocaleString(un
 const uid = () => Math.random().toString(36).slice(2,10);
 const MONTHS = {jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12"};
 const DEFAULT_CATS = [
-  ["inc-pay","Income","Paycheck"],["inc-other","Income","Other money in"],
-  ["domanic","People","Domanic Hall"],
+  ["inc-pay","Income","Paycheck"],["inc-other","Side business","Revenue"],
+  ["domanic","Side business","Restock, Domanic Hall"],
   ["give","Giving","Giving"],["save-b","Saving","Buffer"],
   ["house","Housing","Rent"],["util","Housing","Utilities"],["phone","Housing","Phone"],
   ["gas","Transport","Gas"],["groc","Food","Groceries"],["out","Food","Eating out"],
@@ -100,6 +98,14 @@ function defaultRules() {
 }
 let state = load();
 function load() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.tx) return s; } catch(e) {} return blank(); }
+function migrate() {
+  const side = state.cats.find(c => c.id==="inc-other");
+  if (side) { side.group = "Side business"; side.name = "Revenue"; }
+  const dom = state.cats.find(c => c.id==="domanic");
+  if (dom) { dom.group = "Side business"; dom.name = "Restock, Domanic Hall"; }
+  const pay = state.cats.find(c => c.id==="inc-pay");
+  if (pay) pay.name = "Paycheck";
+}
 function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
 function textOf(t) { return ((t.payee||"")+" "+(t.memo||"")+" "+(t.type||"")).toLowerCase(); }
 function isInternal(t) {
@@ -126,19 +132,24 @@ function esc(s){ return String(s||"").replace(/[&<>]/g, c => ({'&':'&','<':'<','
 function render() {
   const m = state.month;
   document.getElementById("month").value = m;
-  const inn = cashIn(m), out = cashOut(m), left = inn - out;
+  migrate();
+  const plannedIn = state.cats.filter(c => INCOME.has(c.id)).reduce((s,c)=>s+Number(c.plan[m]||0),0);
+  const plannedOut = state.cats.filter(c => !INCOME.has(c.id) && !INTERNAL.has(c.id)).reduce((s,c)=>s+Number(c.plan[m]||0),0);
+  const toAssign = plannedIn - plannedOut;
+  const over = state.cats.filter(c => !INCOME.has(c.id) && !INTERNAL.has(c.id)).reduce((s,c)=>s+Math.max(0, spent(c.id,m)-Number(c.plan[m]||0)),0);
   const num = document.getElementById("heroNum");
-  num.textContent = money(left);
-  num.className = "num " + (left < -0.004 ? "neg" : left > 0.004 ? "pos" : "zero");
-  document.getElementById("heroLabel").textContent = left < -0.004 ? "Overspent" : "Cash left";
+  num.textContent = money(toAssign);
+  num.className = "num " + (Math.abs(toAssign)<0.005?"pos":toAssign>0?"zero":"neg");
+  document.getElementById("heroLabel").textContent = Math.abs(toAssign)<0.005 ? "Assigned to zero" : toAssign>0 ? "Left to assign" : "Over-assigned";
+  const overEl = document.getElementById("overNum");
+  overEl.textContent = money(-over);
+  overEl.className = "num " + (over>0.004?"neg":"pos");
   const ignored = state.tx.filter(t => monthOf(t.date)===m && t.excluded).length;
-  document.getElementById("heroMeta").textContent = ignored + " internal moves ignored · not counted until money leaves Cash App";
-  document.getElementById("inNum").textContent = money(inn);
-  document.getElementById("outNum").textContent = money(out);
+  document.getElementById("heroMeta").textContent = "Expected income "+money(plannedIn)+" · assigned "+money(plannedOut)+" · "+ignored+" internal moves ignored";
   const other = received("inc-other", m);
   const dom = spent("domanic", m);
   const net = other - dom;
-  document.getElementById("pair").innerHTML = "Other money in "+money(other)+" − Domanic Hall "+money(dom)+" = <b class=\""+(net<0?"neg":"pos")+"\">"+money(net)+"</b>";
+  document.getElementById("pair").innerHTML = "Side business · revenue "+money(other)+" − restock "+money(dom)+" = <b class=\""+(net<0?"neg":"pos")+"\">"+money(net)+"</b>";
   const tab = document.querySelector("nav button.on").dataset.tab;
   const view = document.getElementById("view");
   if (tab==="budget") view.innerHTML = budgetView(m);
@@ -155,7 +166,9 @@ function budgetView(m) {
     const used = INCOME.has(c.id) ? received(c.id,m) : spent(c.id,m);
     const remain = plan - used;
     const pct = plan>0 ? Math.min(100, Math.round(used/plan*100)) : (used>0?100:0);
-    return `<div class="cat"><div class="cat head"><div><b>${c.name}</b><div class="mini">${INCOME.has(c.id)?"In":"Spent"} ${money(used)} · ${remain<0?"over "+money(remain):"left "+money(remain)}</div><div class="bar ${used>plan && plan>0?"hot":""}"><span style="width:${pct}%"></span></div></div><input type="number" step="1" data-plan="${c.id}" value="${plan||""}" placeholder="plan"></div></div>`;
+    const label = INCOME.has(c.id) ? "Expected" : "Plan";
+    const fact = INCOME.has(c.id) ? "Received "+money(used) : "Spent "+money(used)+" · "+(remain<0?"over "+money(-remain):"left "+money(remain));
+    return `<div class="cat"><div class="cat head"><div><b>${c.name}</b><div class="mini">${fact}</div><div class="bar ${!INCOME.has(c.id) && used>plan && plan>0?"hot":""}"><span style="width:${pct}%"></span></div></div><input type="number" step="1" data-plan="${c.id}" value="${plan||""}" placeholder="${label}"></div></div>`;
   }).join("")).join("") + `<p class="note">The big number is real money in minus real money out. It goes negative when you spent more than came in. The plan boxes are what you meant to spend.</p>`;
 }
 function overView(m) {
@@ -169,7 +182,7 @@ function overView(m) {
 function activityView(m) {
   const rows = state.tx.filter(t => monthOf(t.date)===m).sort((a,b)=>b.date.localeCompare(a.date) || b.payee.localeCompare(a.payee));
   if (!rows.length) return `<p class="note">No lines this month. Import a statement.</p>`;
-  return `<p class="note">Exclude only if it never left Cash App. Include if it hit a card, a person, an ATM, or your bank.</p>` + rows.slice(0,80).map(t => `<div class="tx"><div><b>${esc(t.payee)}</b> <span class="tag">${t.excluded?"internal":catName(t.categoryId)}</span><div class="mini">${t.date} · ${esc(t.memo||t.account)}</div></div><div style="display:flex; justify-content:space-between; gap:8px; margin-top:6px"><b>${money(t.amount)}</b><button data-ex="${t.id}">${t.excluded?"Include":"Exclude"}</button></div><select data-cat="${t.id}">${state.cats.map(c=>`<option value="${c.id}" ${c.id===t.categoryId?"selected":""}>${c.name}</option>`).join("")}</select></div>`).join("") + (rows.length>80?`<p class="note">Showing 80 of ${rows.length}.</p>`:"");
+  return `<p class="note">${rows.length} lines. Scroll for the rest. Exclude only if it never left Cash App.</p>` + rows.map(t => `<div class="tx"><div><b>${esc(t.payee)}</b> <span class="tag">${t.excluded?"internal":catName(t.categoryId)}</span><div class="mini">${t.date} · ${esc(t.memo||t.account)}</div></div><div style="display:flex; justify-content:space-between; gap:8px; margin-top:6px"><b>${money(t.amount)}</b><button data-ex="${t.id}">${t.excluded?"Include":"Exclude"}</button></div><select data-cat="${t.id}">${state.cats.map(c=>`<option value="${c.id}" ${c.id===t.categoryId?"selected":""}>${c.name}</option>`).join("")}</select></div>`).join("");
 }
 function importView() {
   const sav = state.tx.filter(t => t.savings).length;
