@@ -88,7 +88,6 @@
   <button data-tab="import">Import</button>
   <button data-tab="rules">Auto</button>
 </nav>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 const SEED = [];
 const KEY = "assigned-budget-v1";
@@ -242,7 +241,7 @@ function activityView(m) {
   </div>`).join("");
 }
 function importView() {
-  return `<div class="drop"><b>Drop Cash App CSV, bank CSV, or monthly PDF</b><div class="mini">Or tap choose. Files stay on this device.</div>
+  return `<div class="drop"><b>Upload a PDF statement or CSV</b><div class="mini">Tap Choose File, then pick the statement from Files. Nothing leaves this phone.</div>
     <input id="file" type="file" accept=".csv,.pdf,text/csv,application/pdf" multiple style="margin-top:10px">
   </div>
   <div class="sheet">
@@ -398,35 +397,71 @@ async function handleFiles(files) {
   alert("Added " + added + " lines. Skipped " + skipped + " duplicates.");
   render();
 }
-async function rowsFromPdf(file) {
-  if (!window.pdfjsLib) { alert("PDF reader did not load. Use CSV, or open this page online once so the reader can download."); return []; }
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-  const data = new Uint8Array(await file.arrayBuffer());
-  const pdf = await pdfjsLib.getDocument({data}).promise;
-  let text = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    let lastX = 0;
-    for (const item of content.items) {
-      if (item.transform && item.transform[4] + 20 < lastX) text += "\n";
-      text += item.str + " ";
-      lastX = item.transform ? item.transform[4] : lastX;
-    }
-    text += "\n";
-  }
+async function inflateZlib(bytes) {
+  const ds = new DecompressionStream("deflate");
+  const stream = new Blob([bytes]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+function pdfLiterals(text) {
   const out = [];
-  const re = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.{2,60}?)\s+(-?\$?\d[\d,]*\.\d{2})/g;
+  const re = /\((?:\\.|[^\\)])*\)/g;
   let m;
   while ((m = re.exec(text))) {
+    const s = m[0].slice(1, -1)
+      .replace(/\\([()\\])/g, "$1")
+      .replace(/\\n/g, "\n")
+      .replace(/\\r/g, " ");
+    if (s.trim()) out.push(s);
+  }
+  return out.join("\n");
+}
+async function pdfText(data) {
+  const raw = new TextDecoder("latin1").decode(data);
+  const parts = [];
+  const re = /stream\r?\n([\s\S]*?)endstream/g;
+  let m;
+  while ((m = re.exec(raw))) {
+    let chunk = m[1];
+    if (chunk.endsWith("\r\n")) chunk = chunk.slice(0, -2);
+    else if (chunk.endsWith("\n")) chunk = chunk.slice(0, -1);
+    const bytes = Uint8Array.from(chunk, ch => ch.charCodeAt(0) & 255);
+    let text = chunk;
+    try { text = new TextDecoder("latin1").decode(await inflateZlib(bytes)); } catch (e) {}
+    parts.push(pdfLiterals(text));
+  }
+  const joined = parts.join("\n").trim();
+  return joined || pdfLiterals(raw);
+}
+function rowsFromStatementText(text, filename) {
+  const flat = text.replace(/[ \t]+/g, " ");
+  const out = [];
+  const re = /(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.{2,80}?)\s+(\(?-?\$?\d[\d,]*\.\d{2}\)?) /g;
+  let m;
+  const seen = new Set();
+  while ((m = re.exec(flat + " "))) {
     const date = normDate(m[1]);
-    let amount = Number(m[3].replace(/[$,]/g, ""));
+    const rawAmt = m[3];
+    let amount = Number(rawAmt.replace(/[(),$]/g, ""));
+    if (rawAmt.includes("(") || rawAmt.includes("-")) amount = -Math.abs(amount);
     const payee = m[2].replace(/\s+/g, " ").trim();
-    if (!date || !payee) continue;
-    if (/sent|purchase|fee|debit|payment to/i.test(payee) && amount > 0) amount = -amount;
-    out.push({date, payee, amount, source: file.name, account: "Cash App PDF", type: payee});
+    if (!date || !payee || !isFinite(amount)) continue;
+    if (/sent|purchase|fee|debit|payment to|cash card/i.test(payee) && amount > 0) amount = -amount;
+    const key = date + "|" + amount.toFixed(2) + "|" + payee.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({date, payee, amount, source: filename, account: "Cash App PDF", type: payee});
   }
   return out;
+}
+async function rowsFromPdf(file) {
+  const data = new Uint8Array(await file.arrayBuffer());
+  const text = await pdfText(data);
+  const rows = rowsFromStatementText(text, file.name);
+  if (!rows.length) {
+    const preview = text.replace(/\s+/g, " ").slice(0, 180);
+    alert("That PDF opened, but no transaction lines were found. If this is a scanned statement, export the CSV from cash.app/account instead. Preview: " + (preview || "no text"));
+  }
+  return rows;
 }
 function suggest() {
   const m = state.month;
